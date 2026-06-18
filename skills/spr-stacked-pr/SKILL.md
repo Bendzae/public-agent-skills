@@ -69,7 +69,7 @@ These rules keep every `git spr` invocation non-interactive. Following them, the
    grep -qs '^stargazer:' ~/.spr.yml || echo 'stargazer: true' >> ~/.spr.yml
    ```
 2. **Never run `git spr amend` or `git spr edit` — they open interactive pickers** (`Commit to amend [1-3]:`) and an interactive rebase that an agent cannot drive. Amend commits with **native git instead** (see [Modifying a commit](#modify-a-commit-in-the-stack)). Reserve `git spr` for `update`, `status`, `merge`, and `sync`.
-3. **One commit = one PR. Make each commit a discrete, reviewable unit.** Plan the stack by dependency order *before* committing: foundational changes (models, schema, shared utils) go in **earlier (lower)** commits; dependents (API, UI, consumers) go in **later (higher)** commits. If B depends on A, A must be the same commit or an earlier one.
+3. **One commit = one PR. Make each commit a discrete, reviewable unit.** Plan the stack by dependency order *before* committing: foundational changes (models, schema, shared utils) go in **earlier (lower)** commits; dependents (API, UI, consumers) go in **later (higher)** commits. If B depends on A, A must be the same commit or an earlier one. Boundaries aren't fixed once committed — splitting, squashing, and re-slicing existing commits into the PRs you want (including vertical slices) is expected; see [Convert an existing branch of commits into a stack](#convert-an-existing-branch-of-commits-into-a-stack).
 4. **The commit subject is the PR title; the commit body is the PR description.** Write real commit messages — they are user-facing PR content. Single-line messages produce title-only PRs.
 5. **Never edit or remove the `commit-id:` trailer** spr adds to commit bodies. Removing it orphans the PR (spr creates a duplicate). Native `git commit --amend` and `git rebase` preserve it automatically — that's why they're safe.
 6. **Parse status with `git spr status --text`** (`URL : title` per line) or `git spr status` with `--detail` for the status bits. Plain `git spr status` is already non-interactive.
@@ -133,6 +133,60 @@ git spr status --detail
 ```
 
 `git spr update` pushes a branch per commit, opens/updates one PR per commit, bases each PR on the one below it, and links them into a stack. New commits get new PRs; existing commits update their PR in place.
+
+### Convert an existing branch of commits into a stack
+
+When the branch **already has many commits**, `git spr update` will turn *every* commit between trunk and `HEAD` into its own PR. The command is the same — the work is making sure the existing history is stack-shaped **first**, because each commit becomes a PR exactly as it is.
+
+> **Reshaping rewrites history** (new commit SHAs, and squashes collapse `wip`/fixup commits together) — but it does not lose work: the diffs are preserved and the original commits stay recoverable via `git reflog` / `ORIG_HEAD`. Make a backup ref first so you have a named point to return to:
+> ```bash
+> git branch backup/$(git branch --show-current)   # undo later with: git reset --hard backup/<name>
+> ```
+
+```bash
+# 1. See exactly what will become PRs — one PR per line shown here
+git log --oneline origin/main..HEAD
+
+# 2. Make sure the branch sits directly on trunk with NO merge commits.
+#    A merge commit in the range breaks the one-commit-one-PR model.
+git log --merges origin/main..HEAD          # must print nothing
+git rebase origin/main                       # rebase onto trunk if needed (never `git merge`)
+```
+
+Before submitting, reshape the history so **each commit is one cohesive, reviewable unit with a real message** (subject → PR title, body → PR description). Do this with a single non-interactive-friendly interactive rebase:
+
+```bash
+git rebase -i origin/main
+```
+
+In that rebase, fix the common problems an existing branch has:
+
+- **Split one commit into several PRs** → mark it `edit`, then carve it into multiple commits: `git reset HEAD^` to unstage it, then stage and commit each PR-sized piece separately (`git add -p` to pick individual hunks, or `git add <files>` for whole files), and `git rebase --continue`. This is a first-class move, not just a fix for oversized commits — split whenever you want finer-grained PRs, e.g. to peel a focused change out of a larger one.
+- **Poor commit messages** → mark commits `reword` and write a proper subject + body.
+- **`wip`/`fixup`/typo commits** → `squash` or `fixup` them into the commit they belong to (reorder lines so each fixup sits under its target). `git rebase -i --autosquash origin/main` does this automatically if the commits were made with `git commit --fixup=<sha>`.
+- **Wrong order** → reorder the lines so dependencies come first (bottom = merges first).
+
+**Re-slicing across commit boundaries (e.g. into vertical slices).** The PR boundaries you want don't have to match the existing commit boundaries. If your branch is organized one way (say, horizontal: one commit of models, one of API, one of UI) but you want **vertical slices** — each PR a thin end-to-end increment touching several layers — collapse the range and rebuild it from scratch:
+
+```bash
+git reset --soft origin/main      # keep all changes staged; drop existing commit boundaries
+# now commit the slices you actually want, in dependency order:
+git add models/feature_a.go api/feature_a.go web/feature_a.tsx
+git commit -m "Feature A: end-to-end slice"
+git add models/feature_b.go api/feature_b.go web/feature_b.tsx
+git commit -m "Feature B: end-to-end slice"
+# ...repeat. Use `git add -p` to take only part of a file into a slice.
+```
+
+`git reset --soft origin/main` moves the branch back to trunk while leaving every change in the index, so you can regroup the exact same diff into whatever commits/PRs you want. Keep each slice independently reviewable and ordered so dependencies merge first.
+
+```bash
+# 3. Submit the cleaned-up history as a stack of PRs
+git spr update
+git spr status --detail
+```
+
+> spr adds a `commit-id:` trailer to each commit on this first `update`. From then on, edit commits with native git (see [Modify a commit](#modify-a-commit-in-the-stack)) and re-run `update` — the same commits keep updating the same PRs. To stage the work in batches, prefix not-yet-ready top commits with `WIP` (Agent rule 10) and they'll be skipped until you remove the prefix.
 
 ### Add another PR on top
 
